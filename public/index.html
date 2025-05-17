@@ -199,7 +199,8 @@
             z-index: 1;
         }
 
-        .chat-messages {
+
+.chat-messages {
             flex: 1;
             padding: 15px;
             overflow-y: auto;
@@ -207,10 +208,12 @@
             flex-direction: column;
             scroll-behavior: smooth;
             background-color: white;
-            margin-bottom: 60px;
+            margin-bottom: 62px;
             position: relative;
-            margin-top: 0;
-        }
+            margin-top: 4;
+           font-size: 16px; /* Optional: decrease font size */
+}
+
 
         .message {
             padding: 10px;
@@ -304,7 +307,20 @@
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
 }
 
+.message video.chat-video {
+    width: 100%;
+    margin: 6px 0 0 0;
+    display: block;
+    border-radius: 12px;
+    object-fit: cover;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.1);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
 
+.message video.chat-video:hover {
+    transform: scale(1.02);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.15);
+}
         .message.received {
             flex-direction: row;
             align-self: flex-start;
@@ -1082,39 +1098,47 @@ function displayMessage(text, sender, repliedTo = null) {
         showMessageContextMenu(e);
     });
 
-    const imagePattern = /(https?:\/\/[^\s]+\.(png|jpg|jpeg|gif|webp))/gi;
-    const audioPattern = /(https?:\/\/[^\s]+\.(mp3|ogg|wav|m4a|mp4))/gi;
+    const imagePattern = /(https?:\/\/[^\s]+\.(?:png|jpe?g|gif|webp))/gi;
+  const audioPattern = /(https?:\/\/[^\s]+\.(?:mp3|ogg|wav|m4a))/gi;
+  const videoPattern = /(https?:\/\/[^\s]+\.(?:mp4|webm|ogg))/gi;
 
-    const imageMatches = [...text.matchAll(imagePattern)];
-    const audioMatches = [...text.matchAll(audioPattern)];
+  const imageMatches = [...text.matchAll(imagePattern)];
+  const audioMatches = [...text.matchAll(audioPattern)];
+  const videoMatches = [...text.matchAll(videoPattern)];
 
-    let modifiedText = text;
-    [...imageMatches, ...audioMatches].forEach(match => {
-        modifiedText = modifiedText.replace(match[0], '');
-    });
+  let modifiedText = text;
+  [...imageMatches, ...audioMatches, ...videoMatches].forEach(match => {
+    modifiedText = modifiedText.replace(match[0], '');
+  });
 
-    modifiedText = modifiedText.trim();
-    if (modifiedText) {
-        const textDiv = document.createElement('div');
-        textDiv.textContent = modifiedText;
-        contentDiv.appendChild(textDiv);
-    }
+  modifiedText = modifiedText.trim();
+  if (modifiedText) {
+    const textDiv = document.createElement('div');
+    textDiv.textContent = modifiedText;
+    contentDiv.appendChild(textDiv);
+  }
 
-    imageMatches.forEach(match => {
-        const img = document.createElement('img');
-        img.src = match[0];
-        img.alt = "Image";
-        img.style.marginTop = '6px';
-        contentDiv.appendChild(img);
-    });
+  imageMatches.forEach(match => {
+    const img = document.createElement('img');
+    img.src = match[0];
+    img.alt = "Image";
+    contentDiv.appendChild(img);
+  });
 
-    audioMatches.forEach(match => {
-        const audio = document.createElement('audio');
-        audio.controls = true;
-        audio.src = match[0];
-        audio.style.marginTop = '6px';
-        contentDiv.appendChild(audio);
-    });
+  audioMatches.forEach(match => {
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.src = match[0];
+    contentDiv.appendChild(audio);
+  });
+
+  videoMatches.forEach(match => {
+    const video = document.createElement('video');
+    video.controls = true;
+    video.src = match[0];
+    video.className = 'chat-video';
+    contentDiv.appendChild(video);
+  });
 
     messageDiv.appendChild(avatarDiv);
     messageDiv.appendChild(contentDiv);
@@ -1550,6 +1574,59 @@ function closeZoom() {
             showContainer('chat');
             document.querySelector('.chat-input').style.display = 'flex';
         }
+// Improved URL detection pattern that handles more cases
+const URL_PATTERN = /https?:\/\/[^\s<>]+(?:\b|$)/g;
 
+// Updated highlight function that processes all URLs
+function highlightLinksInElement(element) {
+    if (!element || element.querySelector('img, audio, video, a')) return;
+
+    const text = element.textContent;
+    if (!text) return;
+
+    // Replace all URLs with anchor tags
+    const html = text.replace(URL_PATTERN, url => {
+        // Clean URL by removing trailing punctuation
+        const cleanUrl = url.replace(/[.,;!?]+$/, '');
+        return `<a href="${cleanUrl}" target="_blank" style="color: #0066cc; text-decoration: underline;">${cleanUrl}</a>`;
+    });
+
+    // Only update if we found URLs
+    if (html !== text) {
+        element.innerHTML = html;
+    }
+}
+
+// Update the displayMessage function to ensure it processes all text nodes
+const originalDisplayMessage = displayMessage;
+displayMessage = function(text, sender, repliedTo = null) {
+    const messageElement = originalDisplayMessage.call(this, text, sender, repliedTo);
+    const contentDiv = messageElement.querySelector('.content');
+
+    // Process all text nodes in the content div
+    const textNodes = [];
+    const walker = document.createTreeWalker(
+        contentDiv,
+        NodeFilter.SHOW_TEXT,
+        null,
+        false
+    );
+
+    let node;
+    while (node = walker.nextNode()) {
+        textNodes.push(node);
+    }
+
+    textNodes.forEach(node => {
+        if (URL_PATTERN.test(node.nodeValue)) {
+            const span = document.createElement('span');
+            span.textContent = node.nodeValue;
+            highlightLinksInElement(span);
+            node.parentNode.replaceChild(span, node);
+        }
+    });
+
+    return messageElement;
+};
     </script>
 </html>
