@@ -10,8 +10,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@types/node": "^22.13.11",
     "axios": "^1.8.4",
+    "body-parser": "^2.2.0",
     "express": "^5.1.0",
     "fs-extra": "^11.3.0",
     "yt-search": "^2.6.1"
