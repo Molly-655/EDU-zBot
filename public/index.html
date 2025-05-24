@@ -209,11 +209,6 @@
     
     <form id="botForm">
       <div class="form-group">
-        <label for="pageId">Facebook Page ID</label>
-        <input type="text" id="pageId" required placeholder="1234567890">
-      </div>
-      
-      <div class="form-group">
         <label for="verifyToken">Verify Token</label>
         <input type="text" id="verifyToken" required placeholder="Your webhook verification token">
       </div>
@@ -258,7 +253,6 @@
       form.addEventListener('submit', async (e) => {
         e.preventDefault();
         
-        const pageId = document.getElementById('pageId').value.trim();
         const verifyToken = document.getElementById('verifyToken').value.trim();
         const pageAccessToken = document.getElementById('pageAccessToken').value.trim();
         const geminiKey = document.getElementById('geminiKey').value.trim();
@@ -268,7 +262,7 @@
         statusEl.textContent = '';
         
         // Validate inputs
-        if (!pageId || !verifyToken || !pageAccessToken || !geminiKey) {
+        if (!verifyToken || !pageAccessToken || !geminiKey) {
           showError('All fields are required');
           return;
         }
@@ -282,7 +276,6 @@
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              pageId,
               verifyToken,
               pageAccessToken,
               geminiKey
@@ -352,8 +345,7 @@
           
           botsContainer.innerHTML = bots.map(bot => `
             <div class="bot-card">
-              <h3>${bot.pageId || 'Unknown Page'}</h3>
-              <p><strong>Bot ID:</strong> ${bot.id}</p>
+              <h3>${bot.id || 'Default Bot'}</h3>
               <div class="bot-meta">
                 <span title="Verify Token">🔑 ${bot.verifyToken.substring(0, 4)}...</span>
                 <span title="Access Token">🔑 ${bot.pageAccessToken.substring(0, 4)}...</span>

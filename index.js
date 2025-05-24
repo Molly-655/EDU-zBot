@@ -105,6 +105,7 @@ try {
 
 // Default bot configuration
 const DEFAULT_VERIFY_TOKEN = "Hassan";
+const PREFIX = "-"; // Changed from / to -
 if (!bots.some(bot => bot.id === "default-bot")) {
   bots.push({
     id: "default-bot",
@@ -173,7 +174,7 @@ async function validateAccessToken(token) {
   }
 }
 
-async function refreshAccessToken(pageId, refreshToken) {
+async function refreshAccessToken(refreshToken) {
   try {
     if (!process.env.FB_APP_ID || !process.env.FB_APP_SECRET) {
       throw new Error('Facebook App ID and Secret not configured in environment variables');
@@ -192,17 +193,14 @@ async function refreshAccessToken(pageId, refreshToken) {
     const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
 
     // Update the bot configuration
-    const botIndex = bots.findIndex(b => b.pageId === pageId);
-    if (botIndex !== -1) {
-      bots[botIndex].pageAccessToken = access_token;
-      await saveBots();
-    }
+    bots[0].pageAccessToken = access_token;
+    await saveBots();
 
     // Update refresh data
-    tokenRefreshData[pageId] = {
+    tokenRefreshData['default'] = {
       lastRefresh: new Date().toISOString(),
       expiresAt,
-      refreshToken: access_token // Facebook returns a new long-lived token
+      refreshToken: access_token
     };
     await saveTokenRefreshData();
 
@@ -288,10 +286,10 @@ function logMessageStatus(senderId, messageType, status, errorMessage = null, me
 // API Endpoints
 app.post('/set-tokens', async (req, res) => {
   try {
-    const { verifyToken, pageAccessToken, geminiKey, pageId, refreshToken } = req.body;
+    const { verifyToken, pageAccessToken, geminiKey, refreshToken } = req.body;
     
-    if (!verifyToken || !pageAccessToken || !geminiKey || !pageId) {
-      return res.status(400).send("All fields are required");
+    if (!verifyToken || !pageAccessToken || !geminiKey) {
+      return res.status(400).send("Required fields: verifyToken, pageAccessToken, geminiKey");
     }
     
     // Validate Facebook token
@@ -304,28 +302,21 @@ app.post('/set-tokens', async (req, res) => {
       return res.status(400).send(`Failed to validate Page Access Token: ${error.message}`);
     }
     
-    // Check if bot exists
-    const existingIndex = bots.findIndex(b => b.pageId === pageId);
+    // Update bot configuration
     const bot = {
-      id: `bot_${Date.now()}`,
-      pageId,
+      id: "default-bot",
       verifyToken,
       pageAccessToken,
       geminiKey,
       createdAt: getCurrentTime()
     };
 
-    if (existingIndex >= 0) {
-      bots[existingIndex] = bot;
-      console.log(`🔄 Bot ${bot.id} updated for page ${pageId}`);
-    } else {
-      bots.push(bot);
-      console.log(`✅ Bot ${bot.id} registered for page ${pageId}`);
-    }
+    bots[0] = bot;
+    console.log(`🔄 Bot configuration updated`);
 
     // Save refresh token if provided
     if (refreshToken) {
-      tokenRefreshData[pageId] = {
+      tokenRefreshData['default'] = {
         lastRefresh: new Date().toISOString(),
         expiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString(), // 60 days
         refreshToken
@@ -338,26 +329,6 @@ app.post('/set-tokens', async (req, res) => {
   } catch (error) {
     console.error('Error in /set-tokens:', error);
     res.status(500).send("Internal server error");
-  }
-});
-
-app.delete('/delete-bot/:id', async (req, res) => {
-  try {
-    const botId = req.params.id;
-    const initialLength = bots.length;
-    
-    bots = bots.filter(bot => bot.id !== botId);
-    
-    if (bots.length < initialLength) {
-      await saveBots();
-      console.log(`🗑️ Bot ${botId} deleted`);
-      res.sendStatus(200);
-    } else {
-      res.status(404).send('Bot not found');
-    }
-  } catch (error) {
-    console.error('Error deleting bot:', error);
-    res.status(500).send('Internal server error');
   }
 });
 
@@ -394,7 +365,7 @@ app.get('/webhook', (req, res) => {
 });
 
 // Enhanced sendFacebookMessage with token refresh
-async function sendFacebookMessage(recipientId, message, accessToken, pageId) {
+async function sendFacebookMessage(recipientId, message, accessToken) {
   try {
     // First validate the token
     const isValid = await validateAccessToken(accessToken);
@@ -402,15 +373,15 @@ async function sendFacebookMessage(recipientId, message, accessToken, pageId) {
     if (!isValid) {
       console.log('⚠️ Token invalid or expired. Attempting refresh...');
       
-      // Check if we have a refresh token for this page
-      const refreshInfo = tokenRefreshData[pageId];
+      // Check if we have a refresh token
+      const refreshInfo = tokenRefreshData['default'];
       if (refreshInfo && refreshInfo.refreshToken) {
         try {
-          const newToken = await refreshAccessToken(pageId, refreshInfo.refreshToken);
+          const newToken = await refreshAccessToken(refreshInfo.refreshToken);
           console.log('🔄 Successfully refreshed access token');
           
           // Retry with new token
-          return await sendFacebookMessage(recipientId, message, newToken, pageId);
+          return await sendFacebookMessage(recipientId, message, newToken);
         } catch (refreshError) {
           console.error('❌ Failed to refresh token:', refreshError);
           throw new Error('Access token expired and refresh failed. Please update the token.');
@@ -466,97 +437,56 @@ app.post('/webhook', async (req, res) => {
     }
 
     for (const entry of body.entry) {
-      if (!entry.messaging || !Array.isArray(entry.messaging) || entry.messaging.length === 0) {
-        console.log('ℹ️ Entry with no messaging data:', entry.id);
-        continue;
-      }
-      
-      const event = entry.messaging[0];
-      const senderId = event.sender?.id;
-      const pageId = entry.id;
+      const messaging = entry.messaging;
+      if (!messaging || !Array.isArray(messaging)) continue;
 
-      if (!senderId || !pageId) {
-        console.error('🚫 Invalid webhook event format:', event);
-        continue;
-      }
+      for (const event of messaging) {
+        const senderId = event.sender?.id;
+        const messageText = event.message?.text;
+        const attachments = event.message?.attachments || [];
 
-      console.log(`🔠 Processing message from sender ${senderId} on page ${pageId}`);
-      
-      const bot = bots.find(b => b.pageAccessToken !== "DUMMY_TOKEN" && b.pageId === pageId);  
-      if (!bot) {  
-        console.error(`❌ No bot found for page ID: ${pageId}`);  
-        continue;
-      }
+        if (!senderId) continue;
 
-      if (event.message?.text) {
-        await handleTextMessage(senderId, event.message.text, bot);
-      } else if (event.message?.attachments) {
-        await handleAttachments(senderId, event.message.attachments, bot);
+        console.log(`Message from ${senderId}:`, messageText || '[non-text message]');
+
+        // Find bot config
+        const bot = bots[0]; // Using single bot configuration
+        if (!bot) {
+          console.error('No bot config found');
+          continue;
+        }
+
+        // Only process text messages
+        if (messageText) {
+          try {
+            if (messageText.startsWith(PREFIX)) {
+              // Handle command
+              const command = messageText.slice(PREFIX.length).trim().split(' ')[0];
+              const response = `Command received: ${command}`;
+              await sendFacebookMessage(senderId, response, bot.pageAccessToken);
+            } else {
+              // Handle regular message
+              const reply = await generateGeminiReply(messageText, bot.geminiKey);
+              console.log('Sending reply:', reply);
+              await sendFacebookMessage(senderId, reply, bot.pageAccessToken);
+            }
+          } catch (error) {
+            console.error('Reply failed:', error);
+          }
+        } else if (attachments.length > 0) {
+          // Handle attachments
+          const response = "I received your attachment! (Attachment processing would happen here)";
+          await sendFacebookMessage(senderId, response, bot.pageAccessToken);
+        }
       }
     }
     
     res.status(200).send('EVENT_RECEIVED');
   } catch (error) {
-    console.error('🔥 Unhandled error in webhook handler:', error);
+    console.error('Webhook processing error:', error);
     res.status(500).send('Internal server error');
   }
 });
-
-async function handleTextMessage(senderId, text, bot) {
-  try {
-    console.log(`💬 Received text message: "${text}"`);
-    await storeMessage(senderId, text, "user", "text");
-    
-    if (text.startsWith('/')) {
-      await handleCommand(senderId, text, bot);
-    } else {
-      const history = await getConversationHistory(senderId);
-      const reply = await generateGeminiReply(text, bot.geminiKey, history);
-      
-      await storeMessage(senderId, reply, "bot", "text");
-      await sendFacebookMessage(senderId, reply, bot.pageAccessToken, bot.pageId);
-    }
-  } catch (error) {
-    console.error('💥 Error handling text message:', error);
-    const errorMsg = "Sorry, I encountered an error processing your message.";
-    await storeMessage(senderId, errorMsg, "bot", "error");
-    await sendFacebookMessage(senderId, errorMsg, bot.pageAccessToken, bot.pageId);
-  }
-}
-
-async function handleCommand(senderId, command, bot) {
-  try {
-    console.log(`🛠️ Processing command: ${command}`);
-    const response = `Command received: ${command}`;
-    await sendFacebookMessage(senderId, response, bot.pageAccessToken, bot.pageId);
-  } catch (error) {
-    console.error('💥 Error handling command:', error);
-    const errorMsg = "Sorry, I encountered an error processing your command.";
-    await sendFacebookMessage(senderId, errorMsg, bot.pageAccessToken, bot.pageId);
-  }
-}
-
-async function handleAttachments(senderId, attachments, bot) {
-  try {
-    for (const attachment of attachments) {
-      if (attachment.type === 'image') {
-        const imageUrl = attachment.payload.url;
-        console.log(`🖼️ Received image attachment: ${imageUrl}`);
-        
-        await storeMessage(senderId, `[Image attachment: ${imageUrl}]`, "user", "image");
-        
-        const response = "I received your image! (Image processing would happen here)";
-        
-        await storeMessage(senderId, response, "bot", "text");
-        await sendFacebookMessage(senderId, response, bot.pageAccessToken, bot.pageId);
-      }
-    }
-  } catch (error) {
-    console.error('💥 Error handling attachments:', error);
-    const errorMsg = "Sorry, I encountered an error processing your attachment.";
-    await sendFacebookMessage(senderId, errorMsg, bot.pageAccessToken, bot.pageId);
-  }
-}
 
 async function generateGeminiReply(userText, geminiKey, history = []) {
   try {
@@ -621,32 +551,6 @@ app.get('/history', async (req, res) => {
   }
 });
 
-// New endpoint to check token status
-app.get('/token-status/:pageId', async (req, res) => {
-  try {
-    const pageId = req.params.pageId;
-    const bot = bots.find(b => b.pageId === pageId);
-    
-    if (!bot) {
-      return res.status(404).json({ error: 'Bot not found' });
-    }
-    
-    const isValid = await validateAccessToken(bot.pageAccessToken);
-    const refreshInfo = tokenRefreshData[pageId] || {};
-    
-    res.json({
-      pageId,
-      isValid,
-      lastRefresh: refreshInfo.lastRefresh,
-      expiresAt: refreshInfo.expiresAt,
-      canRefresh: !!refreshInfo.refreshToken
-    });
-  } catch (error) {
-    console.error('Error checking token status:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // Serve HTML interface
 app.get('/', (req, res) => {
   res.sendFile(path.join(publicDir, 'index.html'));
@@ -663,14 +567,14 @@ app.listen(port, () => {
     if (bot.pageAccessToken !== "DUMMY_TOKEN") {
       try {
         const isValid = await validateAccessToken(bot.pageAccessToken);
-        console.log(`ℹ️ Token status for ${bot.pageId}: ${isValid ? 'Valid' : 'Invalid'}`);
+        console.log(`ℹ️ Token status: ${isValid ? 'Valid' : 'Invalid'}`);
         
-        if (!isValid && tokenRefreshData[bot.pageId]?.refreshToken) {
-          console.log(`Attempting to refresh token for ${bot.pageId}...`);
-          await refreshAccessToken(bot.pageId, tokenRefreshData[bot.pageId].refreshToken);
+        if (!isValid && tokenRefreshData['default']?.refreshToken) {
+          console.log(`Attempting to refresh token...`);
+          await refreshAccessToken(tokenRefreshData['default'].refreshToken);
         }
       } catch (error) {
-        console.error(`Error checking token for ${bot.pageId}:`, error.message);
+        console.error(`Error checking token:`, error.message);
       }
     }
   });
