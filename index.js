@@ -1,13 +1,16 @@
+
 const express = require('express');
 const bodyParser = require('body-parser');
-const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const axios = require('axios');
+const sqlite3 = require('sqlite3').verbose();
 
 const app = express();
 const port = process.env.PORT || 3000;
+const FACEBOOK_API_VERSION = 'v19.0'; // Keeping v19.0 for compatibility
+const GEMINI_MODEL_NAME = 'gemini-1.5-flash'; // Using correct model name
 
 // Ensure directories exist
 const publicDir = path.join(__dirname, 'public');
@@ -31,7 +34,6 @@ if (!fs.existsSync(tokenRefreshFile)) {
 }
 
 // Initialize SQLite database
-const sqlite3 = require('sqlite3').verbose();
 const db = new sqlite3.Database(dbFile);
 
 // Create tables if they don't exist
@@ -64,7 +66,6 @@ db.serialize(() => {
     metadata TEXT
   )`);
 
-  // New table for token management
   db.run(`CREATE TABLE IF NOT EXISTS token_management (
     page_id TEXT PRIMARY KEY,
     last_refresh DATETIME,
@@ -105,7 +106,7 @@ try {
 
 // Default bot configuration
 const DEFAULT_VERIFY_TOKEN = "Hassan";
-const PREFIX = "-"; // Changed from / to -
+const PREFIX = "-";
 if (!bots.some(bot => bot.id === "default-bot")) {
   bots.push({
     id: "default-bot",
@@ -164,7 +165,7 @@ function splitLongMessage(message, maxLength = 2000) {
 // Token Management Functions
 async function validateAccessToken(token) {
   try {
-    const response = await axios.get(`https://graph.facebook.com/v19.0/me`, {
+    const response = await axios.get(`https://graph.facebook.com/${FACEBOOK_API_VERSION}/me`, {
       params: { access_token: token }
     });
     return !response.data.error;
@@ -180,7 +181,7 @@ async function refreshAccessToken(refreshToken) {
       throw new Error('Facebook App ID and Secret not configured in environment variables');
     }
 
-    const response = await axios.get(`https://graph.facebook.com/v19.0/oauth/access_token`, {
+    const response = await axios.get(`https://graph.facebook.com/${FACEBOOK_API_VERSION}/oauth/access_token`, {
       params: {
         grant_type: 'fb_exchange_token',
         client_id: process.env.FB_APP_ID,
@@ -396,7 +397,7 @@ async function sendFacebookMessage(recipientId, message, accessToken) {
     
     for (const msg of messages) {
       const response = await axios.post(
-        `https://graph.facebook.com/v19.0/me/messages`,
+        `https://graph.facebook.com/${FACEBOOK_API_VERSION}/me/messages`,
         {
           recipient: { id: recipientId },
           message: { text: msg }
@@ -450,15 +451,16 @@ app.post('/webhook', async (req, res) => {
         console.log(`Message from ${senderId}:`, messageText || '[non-text message]');
 
         // Find bot config
-        const bot = bots[0]; // Using single bot configuration
+        const bot = bots[0];
         if (!bot) {
           console.error('No bot config found');
           continue;
         }
 
-        // Only process text messages
-        if (messageText) {
-          try {
+        try {
+          if (messageText) {
+            await storeMessage(senderId, messageText, "user", "text");
+            
             if (messageText.startsWith(PREFIX)) {
               // Handle command
               const command = messageText.slice(PREFIX.length).trim().split(' ')[0];
@@ -466,17 +468,24 @@ app.post('/webhook', async (req, res) => {
               await sendFacebookMessage(senderId, response, bot.pageAccessToken);
             } else {
               // Handle regular message
-              const reply = await generateGeminiReply(messageText, bot.geminiKey);
-              console.log('Sending reply:', reply);
+              const history = await getConversationHistory(senderId);
+              const reply = await generateGeminiReply(messageText, bot.geminiKey, history);
+              
+              await storeMessage(senderId, reply, "bot", "text");
               await sendFacebookMessage(senderId, reply, bot.pageAccessToken);
             }
-          } catch (error) {
-            console.error('Reply failed:', error);
+          } else if (attachments.length > 0) {
+            // Handle attachments
+            const response = "I received your attachment! (Attachment processing would happen here)";
+            await storeMessage(senderId, "[Attachment received]", "user", "attachment");
+            await storeMessage(senderId, response, "bot", "text");
+            await sendFacebookMessage(senderId, response, bot.pageAccessToken);
           }
-        } else if (attachments.length > 0) {
-          // Handle attachments
-          const response = "I received your attachment! (Attachment processing would happen here)";
-          await sendFacebookMessage(senderId, response, bot.pageAccessToken);
+        } catch (error) {
+          console.error('Error processing message:', error);
+          const errorMsg = "Sorry, I encountered an error processing your message.";
+          await storeMessage(senderId, errorMsg, "bot", "error");
+          await sendFacebookMessage(senderId, errorMsg, bot.pageAccessToken);
         }
       }
     }
@@ -488,25 +497,32 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+// Updated Gemini implementation with proper error handling
 async function generateGeminiReply(userText, geminiKey, history = []) {
   try {
     console.log('🧠 Generating Gemini reply...');
     const genAI = new GoogleGenerativeAI(geminiKey);
-    const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-    
-    let prompt = "Your name is KORA AI. Reply with soft vibes. Here's our conversation so far:\n\n";
-    
-    history.forEach(msg => {
-      prompt += `${msg.role === 'user' ? 'User' : 'KORA AI'}: ${msg.content}\n`;
+    const model = genAI.getGenerativeModel({ 
+      model: GEMINI_MODEL_NAME,
+      generationConfig: {
+        maxOutputTokens: 1000,
+        temperature: 0.7,
+      }
     });
-    
-    prompt += `\nUser: ${userText}\nKORA AI:`;
-    
-    const result = await model.generateContent(prompt);
-    const response = await result.response.text();
+
+    const chat = model.startChat({
+      history: history.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }]
+      })),
+    });
+
+    const result = await chat.sendMessage(userText);
+    const response = await result.response;
+    const text = response.text();
     
     console.log('✅ Gemini response generated successfully');
-    return response;
+    return text;
   } catch (e) {
     console.error("❌ Gemini error:", e);
     return "KORA AI is taking a break. Please try again later.";
